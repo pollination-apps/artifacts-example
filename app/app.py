@@ -1,52 +1,92 @@
+"""Download files from Pollination jobs aka studies."""
 import streamlit as st
+from pollination_streamlit.selectors import get_api_client
+from pollination_streamlit_io import (select_account, select_cloud_artifact, select_project, select_study, select_run)
 
-from pollination_streamlit.selectors import (get_api_client, job_selector)
+import requests
 
 api_client = get_api_client()
 
-job = job_selector(api_client)
+# if 'request_params' not in st.session_state:
+st.session_state['request_params'] = {
+    "page": 1,
+    "per-page": 25,
+    "path": "outputs"
+}
 
-def handleSelectArtifact():
-    bytes = st.session_state['sel_artifact'].download().read()
-    st.session_state['text'] = bytes.decode('utf8')
+if 'request_path' not in st.session_state:
+    st.session_state['request_path'] = [
+        'projects',
+        None,
+        None,
+        'jobs',
+        None,
+        'artifacts'
+    ]
 
-def formatArtifact(artifact):
-    if 'key' in artifact.__dict__:
-        return artifact.key
-    else:
-        return ''
+if 'owner' not in st.session_state:
+    st.session_state['owner'] = None
 
-if 'text' not in st.session_state:
-    st.session_state['text'] = ''
+if 'signed_url' not in st.session_state:
+    st.session_state['signed_url'] = None
 
-if 'artifacts' not in st.session_state:
-    st.session_state['artifacts'] = []
+if 'response' not in st.session_state:
+    st.session_state['response'] = ''
 
-def followArtifactTree(artifact_array):
-    for artifact in artifact_array:
-        if artifact.is_folder:
-            followArtifactTree(artifact.list_children())
-        else :
-              st.session_state['artifacts'].append(artifact)
-    
-if job is not None:
-    artifacts = job.list_artifacts()
+def handle_sel_account():
+    account = st.session_state['sel-account']
+    owner = account['username'] if 'username' in account else account['account_name']
+    st.session_state['owner'] = owner
+    st.session_state['request_path'][1] = owner
 
-    if artifacts is not None:
-        followArtifactTree(artifacts)
+def handle_sel_project():
+    st.session_state['request_path'][2] = st.session_state['sel-project']['name']
 
-st.selectbox(
-  'Select an artifact', 
-  options= st.session_state['artifacts'], 
-  key='sel_artifact', 
-  on_change=handleSelectArtifact, 
-  format_func=formatArtifact
+def handle_sel_study():
+    st.session_state['request_path'][4] = st.session_state['sel-study']['id']
+
+def handle_sel_artifact():
+    artifact = st.session_state['sel-artifact']
+    st.session_state['request_params']['path'] = artifact['pollination_cloud_path']
+    url = "/".join(st.session_state['request_path'])
+    st.session_state['signed_url'] = api_client.get(path=f'/{url}/download', params=st.session_state['request_params'])
+    response = requests.get(st.session_state['signed_url'], headers=api_client.headers)
+    if response.status_code is 200:
+        st.session_state['response'] = response.content
+
+account = select_account('sel-account', api_client, on_change=handle_sel_account)
+
+project = select_project(
+    'sel-project',
+    api_client,
+    project_owner=st.session_state['owner'] or '',
+    on_change=handle_sel_project
+)
+
+select_study(
+    'sel-study',
+    api_client,
+    project_name=st.session_state['sel-project']['name'] if st.session_state['sel-project'] else '',
+    project_owner=st.session_state['owner'] or '',
+    on_change=handle_sel_study
+)
+
+select_cloud_artifact(
+    'sel-artifact',
+    api_client,
+    project_name=st.session_state['sel-project']['name'] if st.session_state['sel-project'] else '',
+    project_owner=st.session_state['owner'] or '',
+    study_id=st.session_state['sel-study']['id'] if st.session_state['sel-study'] else '',
+    file_name_match=".*",
+    on_change=handle_sel_artifact
 )
 
 st.download_button(
-    label='Download Text File', 
-    data=st.session_state['text'], 
-    file_name=st.session_state['sel_artifact'].key if st.session_state['sel_artifact'] is not None else '', 
+    label='Download File', 
+    data=st.session_state['response'], 
+    file_name=st.session_state['sel-artifact']['name'] if st.session_state['sel-artifact'] is not None else 'download.zip', 
     key='download-button',
-    disabled=st.session_state['text'] == ''
+    disabled=st.session_state['response'] == ''
   )
+
+st.json(st.session_state['sel-artifact'] or '{}')
